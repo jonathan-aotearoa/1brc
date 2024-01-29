@@ -46,8 +46,7 @@ public class CalculateAverage_jonathanaotearoa {
             throw new RuntimeException(STR."Error getting instance of \{Unsafe.class.getName()}");
         }
     }
-
-    private static final int WORD_BYTES = Long.BYTES;
+    private static final int MAX_NAME_WORDS = 13; // 8 * 13 = 104
     private static final Path FILE_PATH = Path.of("./measurements.txt");
     private static final Path SAMPLE_DIR_PATH = Path.of("./src/test/resources/samples");
     private static final byte MAX_LINE_BYTES = 107;
@@ -125,7 +124,7 @@ public class CalculateAverage_jonathanaotearoa {
 
         try (final FileChannel fc = FileChannel.open(filePath, StandardOpenOption.READ)) {
             final long fileSize = fc.size();
-            if (fileSize < WORD_BYTES) {
+            if (fileSize < Long.BYTES) {
                 // The file size is less than our word size.
                 // Keep it simple and fall back to non-performant processing.
                 return processTinyFile(fc, fileSize);
@@ -172,7 +171,7 @@ public class CalculateAverage_jonathanaotearoa {
      * @throws IOException if an error occurs mapping the file channel into memory.
      */
     private static SortedMap<String, TemperatureData> processFile(final FileChannel fc, final long fileSize) throws IOException {
-        assert fileSize >= WORD_BYTES : STR."File size cannot be less than word size \{WORD_BYTES}, but was \{fileSize}";
+        assert fileSize >= Long.BYTES : STR."File size cannot be less than word size \{Long.BYTES}, but was \{fileSize}";
 
         try (final Arena arena = Arena.ofConfined()) {
             final long fileAddress = fc.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, arena).address();
@@ -236,36 +235,28 @@ public class CalculateAverage_jonathanaotearoa {
      */
     private static Repository processChunk(final Chunk chunk) {
         final Repository repo = new Repository();
+        // A array capable of storing the words for a 100 byte name.
+        final long[] nameWords = new long[MAX_NAME_WORDS];
         long address = chunk.startAddress;
 
         while (address <= chunk.lastByteAddress) {
-            // Read station name.
-            long nameAddress = address;
-            long nameWord;
+            // Read the station name.
+            final long nameAddress = address;
+            int nameWordIndex = 0;
+
+            long nameWord = chunk.getWord(address);
             long separatorMask;
-            int nameHash = 1;
-
-            while (true) {
+            while ((separatorMask = separatorMaskFor(nameWord)) == 0) {
+                // We've got a whole word, i.e. no separator.
+                nameWords[nameWordIndex++] = nameWord;
+                address += Long.BYTES;
                 nameWord = chunk.getWord(address);
-
-                // Based on the Hacker's Delight "Find First 0-Byte" branch-free, 5-instruction, algorithm.
-                // See also https://graphics.stanford.edu/~seander/bithacks.html#ZeroInWord
-                final long separatorXorResult = nameWord ^ SEPARATOR_XOR_MASK;
-                // If the separator is not present, all bits in the mask will be zero.
-                // If the separator is present, the first bit of the corresponding byte in the mask will be 1.
-                separatorMask = (separatorXorResult - 0x0101010101010101L) & (~separatorXorResult & 0x8080808080808080L);
-                if (separatorMask == 0) {
-                    address += Long.BYTES;
-                    // Multiplicative hashing, as per Arrays.hashCode().
-                    // We could use XOR here, but it "might" produce more collisions.
-                    nameHash = 31 * nameHash + Long.hashCode(nameWord);
-                }
-                else {
-                    break;
-                }
             }
 
             // We've found the separator.
+            // Check if it's the first character, i.e. there are no name bytes.
+            // TODO: implement
+
             // We only support little endian, so we use the *trailing* number of zeros to get the number of name bits.
             final int numberOfNameBits = Long.numberOfTrailingZeros(separatorMask) & ~7;
             final int numberOfNameBytes = numberOfNameBits >> 3;
@@ -276,7 +267,7 @@ public class CalculateAverage_jonathanaotearoa {
                 final int bitsToDiscard = Long.SIZE - numberOfNameBits;
                 // Little endian.
                 final long truncatedNameWord = (nameWord << bitsToDiscard) >>> bitsToDiscard;
-                nameHash = 31 * nameHash + Long.hashCode(truncatedNameWord);
+                nameWords[nameWordIndex] = truncatedNameWord;
             }
 
             final long tempAddress = separatorAddress + 1;
@@ -313,14 +304,24 @@ public class CalculateAverage_jonathanaotearoa {
             final short unsignedTemp = (short) (b100 * 100 + b10 * 10 + b1);
             final short temp = (short) ((unsignedTemp + sign) ^ sign);
 
+            final long[] thisNameWords = Arrays.copyOf(nameWords, nameWordIndex + 1);
             final byte nameSize = (byte) (separatorAddress - nameAddress);
-            repo.addTemp(nameHash, nameAddress, nameSize, temp);
+            repo.addTemp(thisNameWords, nameSize, temp);
 
             // Calculate the address of the next line.
             address = tempAddress + decimalPointIndex + 3;
         }
 
         return repo;
+    }
+
+    private static long separatorMaskFor(final long nameWord) {
+        // Based on the Hacker's Delight "Find First 0-Byte" branch-free, 5-instruction, algorithm.
+        // See also https://graphics.stanford.edu/~seander/bithacks.html#ZeroInWord
+        final long separatorXorResult = nameWord ^ SEPARATOR_XOR_MASK;
+        // If the separator is not present, all bits in the mask will be zero.
+        // If the separator is present, the first bit of the corresponding byte in the mask will be 1.
+        return (separatorXorResult - 0x0101010101010101L) & (~separatorXorResult & 0x8080808080808080L);
     }
 
     /**
@@ -426,7 +427,7 @@ public class CalculateAverage_jonathanaotearoa {
      *
      * @see CalculateAverage_jonathanaotearoa#processTinyFile(FileChannel, long).
      */
-    private static final class SimpleStationData extends TemperatureData implements Comparable<SimpleStationData> {
+    private static final class SimpleStationData extends TemperatureData {
 
         private final String name;
 
@@ -434,37 +435,26 @@ public class CalculateAverage_jonathanaotearoa {
             super(temp);
             this.name = name;
         }
-
-        @Override
-        public int compareTo(final SimpleStationData other) {
-            return name.compareTo(other.name);
-        }
     }
 
-    private static final class StationData extends TemperatureData implements Comparable<StationData> {
+    private static final class StationData extends TemperatureData {
 
-        private final int nameHash;
-        private final long nameAddress;
+        private final long[] nameWords;
         private final byte nameSize;
         private String name;
 
-        StationData(final int nameHash, final long nameAddress, final byte nameSize, final short temp) {
+        StationData(final long[] nameWords, final byte nameSize, final short temp) {
             super(temp);
-            this.nameAddress = nameAddress;
+            this.nameWords = nameWords;
             this.nameSize = nameSize;
-            this.nameHash = nameHash;
-        }
-
-        @Override
-        public int compareTo(final StationData other) {
-            return getName().compareTo(other.getName());
         }
 
         String getName() {
             if (name == null) {
-                final byte[] nameBytes = new byte[nameSize];
-                UNSAFE.copyMemory(null, nameAddress, nameBytes, UNSAFE.arrayBaseOffset(nameBytes.getClass()), nameSize);
-                name = new String(nameBytes, StandardCharsets.UTF_8);
+                final ByteBuffer wordBuffer = ByteBuffer.allocate(nameWords.length * Long.BYTES)
+                        .order(ByteOrder.nativeOrder());
+                wordBuffer.asLongBuffer().put(nameWords);
+                name = new String(wordBuffer.array(), 0, nameSize, StandardCharsets.UTF_8);
             }
             return name;
         }
@@ -487,15 +477,21 @@ public class CalculateAverage_jonathanaotearoa {
         /**
          * Adds a station temperature value to this repository.
          *
-         * @param nameHash    the station name hash.
-         * @param nameAddress the station name address in memory.
-         * @param nameSize    the station name size in bytes.
-         * @param temp        the temperature value.
+         * @param nameWords the station name words.
+         * @param nameSize  the station name size in bytes.
+         * @param temp      the temperature value.
          */
-        public void addTemp(final int nameHash, final long nameAddress, final byte nameSize, short temp) {
-            final int index = findIndex(nameHash, nameAddress, nameSize);
+        public void addTemp(final long[] nameWords, final byte nameSize, short temp) {
+            // We can't leverage a vectorized hashCode calculation for an array of longs :(
+            final int nameHash = Arrays.hashCode(nameWords);
+            // Think about replacing modulo.
+            // https://lemire.me/blog/2018/08/20/performance-of-ranged-accesses-into-arrays-modulo-multiply-shift-and-masks/
+            int index = (nameHash & 0x7FFFFFFF) % CAPACITY;
+            while (table[index] != null && !Arrays.equals(table[index].nameWords, nameWords)) {
+                index = index == LAST_INDEX ? 0 : index + 1;
+            }
             if (table[index] == null) {
-                table[index] = new StationData(nameHash, nameAddress, nameSize, temp);
+                table[index] = new StationData(nameWords, nameSize, temp);
             }
             else {
                 table[index].addTemp(temp);
@@ -504,52 +500,6 @@ public class CalculateAverage_jonathanaotearoa {
 
         public Stream<StationData> entries() {
             return Arrays.stream(table).filter(Objects::nonNull);
-        }
-
-        private int findIndex(int nameHash, final long nameAddress, final byte nameSize) {
-            // Think about replacing modulo.
-            // https://lemire.me/blog/2018/08/20/performance-of-ranged-accesses-into-arrays-modulo-multiply-shift-and-masks/
-            int index = (nameHash & 0x7FFFFFFF) % CAPACITY;
-            while (isCollision(index, nameHash, nameAddress, nameSize)) {
-                index = index == LAST_INDEX ? 0 : index + 1;
-            }
-            return index;
-        }
-
-        private boolean isCollision(final int index, final long nameHash, final long nameAddress, final byte nameSize) {
-            final StationData existing = table[index];
-            if (existing == null) {
-                return false;
-            }
-            if (nameHash != existing.nameHash) {
-                return true;
-            }
-            if (nameSize != existing.nameSize) {
-                return true;
-            }
-            // Last resort; check if the names are the same.
-            // This is real performance hit :(
-            return !isMemoryEqual(nameAddress, existing.nameAddress, nameSize);
-        }
-
-        /**
-         * Checks if two locations in memory have the same value.
-         *
-         * @param address1 the address of the first location.
-         * @param address2 the address of the second locations.
-         * @param size     the number of bytes to check for equality.
-         * @return true if both addresses contain the same bytes.
-         */
-        private static boolean isMemoryEqual(final long address1, final long address2, final byte size) {
-            // Checking 1 byte at a time, so we can bail as early as possible.
-            for (int offset = 0; offset < size; offset++) {
-                final byte b1 = UNSAFE.getByte(address1 + offset);
-                final byte b2 = UNSAFE.getByte(address2 + offset);
-                if (b1 != b2) {
-                    return false;
-                }
-            }
-            return true;
         }
     }
 

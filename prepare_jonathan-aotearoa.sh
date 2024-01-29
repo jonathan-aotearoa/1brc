@@ -23,6 +23,6 @@ if [ ! -f target/CalculateAverage_jonathan-aotearoa_image ]; then
     JAVA_OPTS="--enable-preview -dsa"
     # Use the no-op GC.
     # Enable CPU features (-march=native) and level-3 optimisations (-O3)
-    NATIVE_IMAGE_OPTS="--initialize-at-build-time=dev.morling.onebrc.CalculateAverage_jonathanaotearoa --gc=epsilon -O3 -march=native --strict-image-heap $JAVA_OPTS"
+    NATIVE_IMAGE_OPTS="--initialize-at-build-time=dev.morling.onebrc.CalculateAverage_jonathanaotearoa -O3 -march=native --strict-image-heap $JAVA_OPTS"
     native-image $NATIVE_IMAGE_OPTS -cp target/average-1.0.0-SNAPSHOT.jar -o target/CalculateAverage_jonathan-aotearoa_image dev.morling.onebrc.CalculateAverage_jonathanaotearoa
 fi
