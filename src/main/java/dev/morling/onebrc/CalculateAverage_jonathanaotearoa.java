@@ -31,6 +31,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.ForkJoinPool;
 import java.util.stream.Collectors;
+import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
 public class CalculateAverage_jonathanaotearoa {
@@ -380,15 +381,11 @@ public class CalculateAverage_jonathanaotearoa {
             count = 1;
         }
 
-        void addTemp(final short temp) {
-            if (temp < min) {
-                min = temp;
-            }
-            else if (temp > max) {
-                max = temp;
-            }
-            sum += temp;
-            count++;
+        protected TemperatureData(final short max, final short min, final long sum, final int count) {
+            this.max = max;
+            this.min = min;
+            this.sum = sum;
+            this.count = count;
         }
 
         TemperatureData merge(final TemperatureData other) {
@@ -436,17 +433,14 @@ public class CalculateAverage_jonathanaotearoa {
     }
 
     private static final class StationData extends TemperatureData {
-
-        private final int nameHash;
         private final long nameAddress;
         private final byte nameSize;
         private String name;
 
-        StationData(final int nameHash, final long nameAddress, final byte nameSize, final short temp) {
-            super(temp);
+        StationData(final long nameAddress, final byte nameSize, final short tempMin, final short tempMax, final long tempSum, final int tempCount) {
+            super(tempMin, tempMax, tempSum, tempCount);
             this.nameAddress = nameAddress;
             this.nameSize = nameSize;
-            this.nameHash = nameHash;
         }
 
         String getName() {
@@ -468,13 +462,25 @@ public class CalculateAverage_jonathanaotearoa {
      */
     private static final class Repository {
 
-        private static final int CAPACITY = 100_003;
-        private static final int LAST_INDEX = CAPACITY - 1;
+        // Station data field offset constants.
+        static final int ENTRY_FLAG_OFFSET = 0;
+        static final int NAME_HASH_OFFSET = ENTRY_FLAG_OFFSET + Byte.BYTES;
+        static final int NAME_ADDRESS_OFFSET = NAME_HASH_OFFSET + Byte.BYTES;
+        static final int NAME_SIZE_OFFSET = NAME_ADDRESS_OFFSET + Long.BYTES;
+        static final int TEMP_MIN_OFFSET = NAME_SIZE_OFFSET + Byte.BYTES;
+        static final int TEMP_MAX_OFFSET = TEMP_MIN_OFFSET + Short.BYTES;
+        static final int TEMP_SUM_OFFSET = TEMP_MAX_OFFSET + Short.BYTES;
+        static final int TEMP_COUNT_OFFSET = TEMP_SUM_OFFSET + Long.BYTES;
+        static final int ENTRY_SIZE = TEMP_COUNT_OFFSET + Integer.BYTES;
 
-        private final StationData[] table;
+        private static final int CAPACITY = 100_003;
+        private static final int TABLE_SIZE = CAPACITY * ENTRY_SIZE;
+        private final long tableAddress;
+        private final long maxEntryAddress;
 
         public Repository() {
-            this.table = new StationData[CAPACITY];
+            tableAddress = UNSAFE.allocateMemory(TABLE_SIZE);
+            maxEntryAddress = tableAddress + TABLE_SIZE - ENTRY_SIZE;
         }
 
         /**
@@ -486,41 +492,84 @@ public class CalculateAverage_jonathanaotearoa {
          * @param temp        the temperature value.
          */
         public void addTemp(final int nameHash, final long nameAddress, final byte nameSize, short temp) {
-            final int index = findIndex(nameHash, nameAddress, nameSize);
-            if (table[index] == null) {
-                table[index] = new StationData(nameHash, nameAddress, nameSize, temp);
+            final long entryAddress = findEntryAddress(nameHash, nameAddress, nameSize);
+
+            if (UNSAFE.getByte(entryAddress) == 0) {
+                UNSAFE.putByte(entryAddress, (byte) 1);
+                UNSAFE.putInt(entryAddress + NAME_HASH_OFFSET, nameHash);
+                UNSAFE.putLong(entryAddress + NAME_ADDRESS_OFFSET, nameAddress);
+                UNSAFE.putByte(entryAddress + NAME_SIZE_OFFSET, nameSize);
+                UNSAFE.putShort(entryAddress + TEMP_MIN_OFFSET, temp);
+                UNSAFE.putShort(entryAddress + TEMP_MAX_OFFSET, temp);
+                UNSAFE.putLong(entryAddress + TEMP_SUM_OFFSET, temp);
+                UNSAFE.putInt(entryAddress + TEMP_COUNT_OFFSET, 1);
             }
             else {
-                table[index].addTemp(temp);
+                final long tempMinAddress = entryAddress + TEMP_MIN_OFFSET;
+                final short currentTempMin = UNSAFE.getShort(tempMinAddress);
+                if (temp < currentTempMin) {
+                    UNSAFE.putShort(tempMinAddress, temp);
+                }
+                else {
+                    final long tempMaxAddress = entryAddress + TEMP_MAX_OFFSET;
+                    final short currentTempMax = UNSAFE.getShort(tempMaxAddress);
+                    if (temp > currentTempMax) {
+                        UNSAFE.putShort(tempMaxAddress, temp);
+                    }
+                }
+                final long tempSumAddress = entryAddress + TEMP_SUM_OFFSET;
+                final long currentTempSum = UNSAFE.getLong(tempSumAddress);
+                UNSAFE.putLong(tempSumAddress, currentTempSum + temp);
+                final long tempCountAddress = entryAddress + TEMP_COUNT_OFFSET;
+                final int tempCount = UNSAFE.getInt(tempCountAddress) + 1;
+                UNSAFE.putLong(tempCountAddress, tempCount);
             }
         }
 
         public Stream<StationData> entries() {
-            return Arrays.stream(table).filter(Objects::nonNull);
+            return LongStream.range(0, CAPACITY)
+                    .map(index -> index * ENTRY_SIZE)
+                    .map(offset -> tableAddress + offset)
+                    .filter(entryAddress -> UNSAFE.getByte(entryAddress) == 1)
+                    .mapToObj(entryAddress -> new StationData(
+                            UNSAFE.getLong(entryAddress + NAME_ADDRESS_OFFSET),
+                            UNSAFE.getByte(entryAddress + NAME_SIZE_OFFSET),
+                            UNSAFE.getShort(entryAddress + TEMP_MIN_OFFSET),
+                            UNSAFE.getShort(entryAddress + TEMP_MAX_OFFSET),
+                            UNSAFE.getLong(entryAddress + TEMP_SUM_OFFSET),
+                            UNSAFE.getInt(entryAddress + TEMP_COUNT_OFFSET)));
         }
 
-        private int findIndex(int nameHash, final long nameAddress, final byte nameSize) {
+        private long findEntryAddress(int nameHash, final long nameAddress, final byte nameSize) {
             // Think about replacing modulo.
             // https://lemire.me/blog/2018/08/20/performance-of-ranged-accesses-into-arrays-modulo-multiply-shift-and-masks/
-            int index = (nameHash & 0x7FFFFFFF) % CAPACITY;
-            while (isMismatch(index, nameHash, nameAddress, nameSize)) {
-                index = index == LAST_INDEX ? 0 : index + 1;
+            final long index = (nameHash & 0x7FFFFFFF) % CAPACITY;
+            final long offset = index * ENTRY_SIZE;
+            long entryAddress = tableAddress + offset;
+            int mismatchCount = 0;
+            while (isMismatch(entryAddress, nameHash, nameAddress, nameSize)) {
+                entryAddress = entryAddress == maxEntryAddress ? tableAddress : entryAddress + ENTRY_SIZE;
+                mismatchCount++;
             }
-            return index;
+            System.out.println(mismatchCount);
+            return entryAddress;
         }
 
-        private boolean isMismatch(final int index, final long nameHash, final long nameAddress, final byte nameSize) {
-            final StationData existing = table[index];
-            if (existing == null) {
+        private boolean isMismatch(final long entryAddress, final long nameHash, final long nameAddress, final byte nameSize) {
+            final byte existing = UNSAFE.getByte(entryAddress);
+            if (existing == 0) {
                 return false;
             }
-            if (nameHash == existing.nameHash) {
-                if (nameSize == existing.nameSize && isMemoryEqual(nameAddress, existing.nameAddress, nameSize)) {
-                    return false;
+            final int existingNameHash = UNSAFE.getInt(entryAddress + NAME_HASH_OFFSET);
+            if (nameHash == existingNameHash) {
+                final byte existingNameSize = UNSAFE.getByte(entryAddress + NAME_SIZE_OFFSET);
+                if (nameSize == existingNameSize) {
+                    final long existingNameAddress = UNSAFE.getLong(entryAddress + NAME_ADDRESS_OFFSET);
+                    return isMemoryEqual(nameAddress, existingNameAddress, nameSize);
                 }
                 // We've got a hash collision :(
                 // final String name1 = loadStringFromMemory(nameAddress, nameSize);
-                // final String name2 = loadStringFromMemory(existing.nameAddress, existing.nameSize);
+                // final String name2 = loadStringFromMemory(existingNameAddress, existingNameSize);
                 // System.out.printf("Collision. Hash: %d, Name1: '%s', Name2: '%s'%n", nameHash, name1, name2);
             }
             return true;
@@ -531,24 +580,13 @@ public class CalculateAverage_jonathanaotearoa {
          *
          * @param address1 the first address.
          * @param address2 the second address.
-         * @param size the number of bytes to check.
+         * @param size     the number of bytes to check.
          * @return true if both memory addresses contain the same bytes.
          */
         private static boolean isMemoryEqual(final long address1, final long address2, final byte size) {
-            final int wordCount = size >> 3;
-            final int byteCount = size & 7;
             long ptr1 = address1;
             long ptr2 = address2;
-            for (int i = 0; i < wordCount; i++) {
-                final long l1 = UNSAFE.getLong(ptr1);
-                final long l2 = UNSAFE.getLong(ptr2);
-                if (l1 != l2) {
-                    return false;
-                }
-                ptr1 += Long.BYTES;
-                ptr2 += Long.BYTES;
-            }
-            for (int i = 0; i < byteCount; i++) {
+            for (int i = 0; i < size; i++) {
                 final byte b1 = UNSAFE.getByte(ptr1++);
                 final byte b2 = UNSAFE.getByte(ptr2++);
                 if (b1 != b2) {
