@@ -159,6 +159,9 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-surefire-plugin</artifactId>
           <version>3.2.3</version>
+          <configuration>
+            <argLine>--enable-preview</argLine>
+          </configuration>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
@@ -213,6 +216,8 @@
                 <exclude>**/measurements*.out</exclude>
                 <exclude>out_expected.txt</exclude>
                 <exclude>github_users.txt</exclude>
+                <exclude>profile.html</exclude>
+                <exclude>src/test/**/*.*</exclude>
                 <!-- Cliff asked to be named as the copyright holder for his entry; -->
                 <exclude>src/main/java/dev/morling/onebrc/CalculateAverage_cliffclick.java</exclude>
                 <exclude>.sdkmanrc</exclude>
