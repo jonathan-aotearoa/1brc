@@ -1,0 +1,3 @@
+Christchurch;-99.9
+Christchurch;0.0
+Christchurch;99.9

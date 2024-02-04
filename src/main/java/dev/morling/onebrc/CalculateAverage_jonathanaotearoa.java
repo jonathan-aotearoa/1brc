@@ -44,7 +44,7 @@ public class CalculateAverage_jonathanaotearoa {
             theUnsafe.setAccessible(true);
             UNSAFE = (Unsafe) theUnsafe.get(null);
         } catch (NoSuchFieldException | IllegalAccessException e) {
-            throw new RuntimeException(STR."Error getting instance of \{Unsafe.class.getName()}");
+            throw new RuntimeException(STR."Error getting instance of \{Unsafe.class.getName()}", e);
         }
     }
 
@@ -119,7 +119,7 @@ public class CalculateAverage_jonathanaotearoa {
      * @return a sorted map of station data keyed by station name.
      * @throws IOException if an error occurs.
      */
-    private static SortedMap<String, TemperatureData> processFile(final Path filePath) throws IOException {
+    static SortedMap<String, TemperatureData> processFile(final Path filePath) throws IOException {
         assert filePath != null : "filePath cannot be null";
         assert Files.isRegularFile(filePath) : STR."\{filePath.toAbsolutePath()} is not a valid file";
 
@@ -368,7 +368,7 @@ public class CalculateAverage_jonathanaotearoa {
     /**
      * Abstract class encapsulating temperature data.
      */
-    private static abstract class TemperatureData {
+    static abstract class TemperatureData {
 
         private short min;
         private short max;
@@ -381,9 +381,9 @@ public class CalculateAverage_jonathanaotearoa {
             count = 1;
         }
 
-        protected TemperatureData(final short max, final short min, final long sum, final int count) {
-            this.max = max;
+        protected TemperatureData(final short min, final short max, final long sum, final int count) {
             this.min = min;
+            this.max = max;
             this.sum = sum;
             this.count = count;
         }
@@ -443,11 +443,25 @@ public class CalculateAverage_jonathanaotearoa {
             this.nameSize = nameSize;
         }
 
+        StationData(final long entryAddress) {
+            this (UNSAFE.getLong(entryAddress + Repository.NAME_ADDRESS_OFFSET),
+                    UNSAFE.getByte(entryAddress + Repository.NAME_SIZE_OFFSET),
+                    UNSAFE.getShort(entryAddress + Repository.TEMP_MIN_OFFSET),
+                    UNSAFE.getShort(entryAddress + Repository.TEMP_MAX_OFFSET),
+                    UNSAFE.getLong(entryAddress + Repository.TEMP_SUM_OFFSET),
+                    UNSAFE.getInt(entryAddress + Repository.TEMP_COUNT_OFFSET));
+        }
+
         String getName() {
             if (name == null) {
                 name = loadStringFromMemory(nameAddress, nameSize);
             }
             return name;
+        }
+
+        @Override
+        public String toString() {
+            return STR."Name: \{getName()}, Name address: \{nameAddress}, Min: \{getMin()}, Max: \{getMax()}, Mean: \{getMean()}";
         }
     }
 
@@ -463,9 +477,9 @@ public class CalculateAverage_jonathanaotearoa {
     private static final class Repository {
 
         // Station data field offset constants.
-        static final int ENTRY_FLAG_OFFSET = 0;
-        static final int NAME_HASH_OFFSET = ENTRY_FLAG_OFFSET + Byte.BYTES;
-        static final int NAME_ADDRESS_OFFSET = NAME_HASH_OFFSET + Byte.BYTES;
+        // The first byte in an entry is flag denoting whether the entry is occupied.
+        static final int NAME_HASH_OFFSET = 1;
+        static final int NAME_ADDRESS_OFFSET = NAME_HASH_OFFSET + Integer.BYTES;
         static final int NAME_SIZE_OFFSET = NAME_ADDRESS_OFFSET + Long.BYTES;
         static final int TEMP_MIN_OFFSET = NAME_SIZE_OFFSET + Byte.BYTES;
         static final int TEMP_MAX_OFFSET = TEMP_MIN_OFFSET + Short.BYTES;
@@ -480,6 +494,8 @@ public class CalculateAverage_jonathanaotearoa {
 
         public Repository() {
             tableAddress = UNSAFE.allocateMemory(TABLE_SIZE);
+            // We need to set everything to zero as the allocated memory can/will be full of garbage.
+            UNSAFE.setMemory(tableAddress, TABLE_SIZE, (byte) 0);
             maxEntryAddress = tableAddress + TABLE_SIZE - ENTRY_SIZE;
         }
 
@@ -491,7 +507,7 @@ public class CalculateAverage_jonathanaotearoa {
          * @param nameSize    the station name size in bytes.
          * @param temp        the temperature value.
          */
-        public void addTemp(final int nameHash, final long nameAddress, final byte nameSize, short temp) {
+        public void addTemp(final int nameHash, final long nameAddress, final byte nameSize, final short temp) {
             final long entryAddress = findEntryAddress(nameHash, nameAddress, nameSize);
 
             if (UNSAFE.getByte(entryAddress) == 0) {
@@ -522,7 +538,7 @@ public class CalculateAverage_jonathanaotearoa {
                 UNSAFE.putLong(tempSumAddress, currentTempSum + temp);
                 final long tempCountAddress = entryAddress + TEMP_COUNT_OFFSET;
                 final int tempCount = UNSAFE.getInt(tempCountAddress) + 1;
-                UNSAFE.putLong(tempCountAddress, tempCount);
+                UNSAFE.putInt(tempCountAddress, tempCount);
             }
         }
 
@@ -531,48 +547,44 @@ public class CalculateAverage_jonathanaotearoa {
                     .map(index -> index * ENTRY_SIZE)
                     .map(offset -> tableAddress + offset)
                     .filter(entryAddress -> UNSAFE.getByte(entryAddress) == 1)
-                    .mapToObj(entryAddress -> new StationData(
-                            UNSAFE.getLong(entryAddress + NAME_ADDRESS_OFFSET),
-                            UNSAFE.getByte(entryAddress + NAME_SIZE_OFFSET),
-                            UNSAFE.getShort(entryAddress + TEMP_MIN_OFFSET),
-                            UNSAFE.getShort(entryAddress + TEMP_MAX_OFFSET),
-                            UNSAFE.getLong(entryAddress + TEMP_SUM_OFFSET),
-                            UNSAFE.getInt(entryAddress + TEMP_COUNT_OFFSET)));
+                    .mapToObj(StationData::new);
         }
 
-        private long findEntryAddress(int nameHash, final long nameAddress, final byte nameSize) {
+        private long findEntryAddress(final int nameHash, final long nameAddress, final byte nameSize) {
             // Think about replacing modulo.
             // https://lemire.me/blog/2018/08/20/performance-of-ranged-accesses-into-arrays-modulo-multiply-shift-and-masks/
-            final long index = (nameHash & 0x7FFFFFFF) % CAPACITY;
-            final long offset = index * ENTRY_SIZE;
-            long entryAddress = tableAddress + offset;
-            int mismatchCount = 0;
+            final int entryIndex = (nameHash & 0x7FFFFFFF) % CAPACITY;
+            final int entryOffset = entryIndex * ENTRY_SIZE;
+            long entryAddress = tableAddress + entryOffset;
+//            int mismatchCount = 0;
             while (isMismatch(entryAddress, nameHash, nameAddress, nameSize)) {
                 entryAddress = entryAddress == maxEntryAddress ? tableAddress : entryAddress + ENTRY_SIZE;
-                mismatchCount++;
+//                mismatchCount++;
             }
-            System.out.println(mismatchCount);
+//            System.out.println(mismatchCount);
             return entryAddress;
         }
 
-        private boolean isMismatch(final long entryAddress, final long nameHash, final long nameAddress, final byte nameSize) {
+        private boolean isMismatch(final long entryAddress, final int nameHash, final long nameAddress, final byte nameSize) {
             final byte existing = UNSAFE.getByte(entryAddress);
             if (existing == 0) {
+                // Empty entry
                 return false;
             }
+            // We've got an existing entry
             final int existingNameHash = UNSAFE.getInt(entryAddress + NAME_HASH_OFFSET);
-            if (nameHash == existingNameHash) {
-                final byte existingNameSize = UNSAFE.getByte(entryAddress + NAME_SIZE_OFFSET);
-                if (nameSize == existingNameSize) {
-                    final long existingNameAddress = UNSAFE.getLong(entryAddress + NAME_ADDRESS_OFFSET);
-                    return isMemoryEqual(nameAddress, existingNameAddress, nameSize);
-                }
-                // We've got a hash collision :(
-                // final String name1 = loadStringFromMemory(nameAddress, nameSize);
-                // final String name2 = loadStringFromMemory(existingNameAddress, existingNameSize);
-                // System.out.printf("Collision. Hash: %d, Name1: '%s', Name2: '%s'%n", nameHash, name1, name2);
+            if (nameHash != existingNameHash) {
+                // The name hashes are different, so it's a mismatch.
+                return true;
             }
-            return true;
+            final byte existingNameSize = UNSAFE.getByte(entryAddress + NAME_SIZE_OFFSET);
+            if (nameSize != existingNameSize) {
+                // The sizes are different, so it's a mismatch.
+                return true;
+            }
+            final long existingNameAddress = UNSAFE.getLong(entryAddress + NAME_ADDRESS_OFFSET);
+            // If the names aren't equal, it's a mismatch.
+            return !isMemoryEqual(nameAddress, existingNameAddress, nameSize);
         }
 
         /**
@@ -620,7 +632,7 @@ public class CalculateAverage_jonathanaotearoa {
                             testResults.append("Failed. Actual output does not match expected\n");
                         }
                     } catch (IOException e) {
-                        throw new RuntimeException(STR."Error testing '\{filePath.getFileName()}");
+                        throw new RuntimeException(STR."Error testing '\{filePath.getFileName()}", e);
                     }
                 });
             } finally {
