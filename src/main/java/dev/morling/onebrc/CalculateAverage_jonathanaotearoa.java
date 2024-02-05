@@ -368,7 +368,7 @@ public class CalculateAverage_jonathanaotearoa {
     /**
      * Abstract class encapsulating temperature data.
      */
-    static abstract class TemperatureData {
+    static class TemperatureData {
 
         private short min;
         private short max;
@@ -444,7 +444,7 @@ public class CalculateAverage_jonathanaotearoa {
         }
 
         StationData(final long entryAddress) {
-            this (UNSAFE.getLong(entryAddress + Repository.NAME_ADDRESS_OFFSET),
+            this(UNSAFE.getLong(entryAddress + Repository.NAME_ADDRESS_OFFSET),
                     UNSAFE.getByte(entryAddress + Repository.NAME_SIZE_OFFSET),
                     UNSAFE.getShort(entryAddress + Repository.TEMP_MIN_OFFSET),
                     UNSAFE.getShort(entryAddress + Repository.TEMP_MAX_OFFSET),
@@ -556,12 +556,12 @@ public class CalculateAverage_jonathanaotearoa {
             final int entryIndex = (nameHash & 0x7FFFFFFF) % CAPACITY;
             final int entryOffset = entryIndex * ENTRY_SIZE;
             long entryAddress = tableAddress + entryOffset;
-//            int mismatchCount = 0;
+            // int mismatchCount = 0;
             while (isMismatch(entryAddress, nameHash, nameAddress, nameSize)) {
                 entryAddress = entryAddress == maxEntryAddress ? tableAddress : entryAddress + ENTRY_SIZE;
-//                mismatchCount++;
+                // mismatchCount++;
             }
-//            System.out.println(mismatchCount);
+            // System.out.println(mismatchCount);
             return entryAddress;
         }
 
