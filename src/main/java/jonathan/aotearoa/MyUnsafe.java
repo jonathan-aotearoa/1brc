@@ -1,12 +1,12 @@
-package jonathan.aotearoa.jmh;
+package jonathan.aotearoa;
 
 import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
 
-class MyUnsafe {
+public class MyUnsafe {
 
-    static final Unsafe UNSAFE;
+    public static final Unsafe UNSAFE;
 
     static {
         try {

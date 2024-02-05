@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 
+import static jonathan.aotearoa.MyUnsafe.UNSAFE;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 
 class LongToBytesTest {
@@ -15,8 +16,22 @@ class LongToBytesTest {
     @BeforeEach
     void setUp() {
         expected = new byte[] {1,2,3,4,5,6,7,8};
-        final ByteBuffer bb = ByteBuffer.wrap(expected);
-        l = bb.getLong();
+        l = ByteBuffer.wrap(expected).getLong();
+    }
+
+    @Test
+    void byteBuffer() {
+        final byte[] actual = ByteBuffer.allocate(Long.BYTES)
+                .putLong(l)
+                .array();
+        assertArrayEquals(expected, actual);
+    }
+
+    @Test
+    void unsafePutLong() {
+        final byte[] actual = new byte[Long.BYTES];
+        UNSAFE.putLong(actual, UNSAFE.arrayBaseOffset(actual.getClass()), Long.reverseBytes(l));
+        assertArrayEquals(expected, actual);
     }
 
     @Test

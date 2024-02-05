@@ -4,18 +4,21 @@ import org.openjdk.jmh.annotations.*;
 
 import java.nio.ByteBuffer;
 
+import static jonathan.aotearoa.MyUnsafe.UNSAFE;
+
 /**
  * <pre>
- * Benchmark                            Mode  Cnt          Score   Error  Units
- * LongToBytesBenchmark.byteBuffer     thrpt    2  750505152.137          ops/s
- * LongToBytesBenchmark.forLoopShifts  thrpt    2  299600011.755          ops/s
- * LongToBytesBenchmark.shifts         thrpt    2  299027086.597          ops/s
+ * Benchmark                            Mode  Cnt           Score          Error  Units
+ * LongToBytesBenchmark.byteBuffer     thrpt    6   748843295.528 ± 17490904.818  ops/s
+ * LongToBytesBenchmark.forLoopShifts  thrpt    6  2109963099.899 ± 67142762.844  ops/s
+ * LongToBytesBenchmark.shifts         thrpt    6  1573924244.386 ± 61308901.916  ops/s
+ * LongToBytesBenchmark.unsafePutLong  thrpt    6  1548136262.496 ± 10463857.252  ops/s
  * </pre>
  */
 @BenchmarkMode(Mode.Throughput)
-@Fork(1)
-@Warmup(iterations = 2)
-@Measurement(iterations = 2)
+@Fork(2)
+@Warmup(iterations = 3, time = 3)
+@Measurement(iterations = 3, time = 3)
 @State(Scope.Thread)
 public class LongToBytesBenchmark {
 
@@ -37,8 +40,13 @@ public class LongToBytesBenchmark {
     }
 
     @Benchmark
+    public byte[] unsafePutLong() {
+        UNSAFE.putLong(bytes, UNSAFE.arrayBaseOffset(bytes.getClass()), Long.reverseBytes(l));
+        return bytes;
+    }
+
+    @Benchmark
     public byte[] forLoopShifts() {
-        final byte[] bytes = new byte[Long.BYTES];
         for (int i = 7, shift = 0; i >= 0; i--, shift += Byte.SIZE) {
             bytes[i] = (byte) (l >> shift);
         }
@@ -47,7 +55,6 @@ public class LongToBytesBenchmark {
 
     @Benchmark
     public byte[] shifts() {
-        final byte[] bytes = new byte[Long.BYTES];
         bytes[7] = (byte) l;
         bytes[6] = (byte) (l >> 8);
         bytes[5] = (byte) (l >> 16);

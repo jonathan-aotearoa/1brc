@@ -2,7 +2,7 @@ package jonathan.aotearoa.jmh;
 
 import org.openjdk.jmh.annotations.*;
 
-import static jonathan.aotearoa.jmh.MyUnsafe.UNSAFE;
+import static jonathan.aotearoa.MyUnsafe.UNSAFE;
 
 /**
  * <pre>
