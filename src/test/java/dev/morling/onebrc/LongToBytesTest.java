@@ -1,0 +1,48 @@
+package dev.morling.onebrc;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.nio.ByteBuffer;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+
+class LongToBytesTest {
+    
+    private byte[] expected;
+    private long l;
+    
+    @BeforeEach
+    void setUp() {
+        expected = new byte[] {1,2,3,4,5,6,7,8};
+        final ByteBuffer bb = ByteBuffer.wrap(expected);
+        l = bb.getLong();
+    }
+
+    @Test
+    void forLoopShift() {
+        // When
+        final byte[] actual = new byte[Long.BYTES];
+        for (int i = 7, shift = 0; i >= 0; i--, shift += Byte.SIZE) {
+            actual[i] = (byte) (l >> shift);
+        }
+        // Then
+        assertArrayEquals(expected, actual);
+    }
+
+    @Test
+    void shifts() {
+        // When
+        final byte[] actual = new byte[Long.BYTES];
+        actual[7] = (byte) l;
+        actual[6] = (byte) (l >> 8);
+        actual[5] = (byte) (l >> 16);
+        actual[4] = (byte) (l >> 24);
+        actual[3] = (byte) (l >> 32);
+        actual[2] = (byte) (l >> 40);
+        actual[1] = (byte) (l >> 48);
+        actual[0] = (byte) (l >> 56);
+        // Then
+        assertArrayEquals(expected, actual);
+    }
+}

@@ -5,21 +5,19 @@ import org.openjdk.jmh.annotations.*;
 import static jonathan.aotearoa.jmh.MyUnsafe.UNSAFE;
 
 /**
- * <p>
  * <pre>
  * Benchmark                         Mode  Cnt         Score   Error  Units
  * LongAddition.array               thrpt    2  75181798.641          ops/s
  * LongAddition.localVariables      thrpt    2  75238801.255          ops/s
  * LongAddition.unsafeNativeMemory  thrpt    2  41609345.498          ops/s
  * </pre>
- * </p>
  */
 @BenchmarkMode(Mode.Throughput)
 @Fork(1)
 @Warmup(iterations = 2)
 @Measurement(iterations = 2)
 @State(Scope.Thread)
-public class LongAccessAndUpdate {
+public class LongAccessAndUpdateBenchmark {
 
     private long address;
 
