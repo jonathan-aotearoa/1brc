@@ -1,4 +1,4 @@
-package dev.morling.onebrc;
+package jonathan.aotearoa.jmh;
 
 import sun.misc.Unsafe;
 
@@ -18,5 +18,6 @@ class MyUnsafe {
         }
     }
 
-    private MyUnsafe() {}
+    private MyUnsafe() {
+    }
 }

@@ -1,12 +1,12 @@
-package dev.morling.onebrc;
+package jonathan.aotearoa.jmh;
 
-import org.openjdk.jmh.annotations.Benchmark;
-import org.openjdk.jmh.annotations.BenchmarkMode;
-import org.openjdk.jmh.annotations.Mode;
+import org.openjdk.jmh.annotations.*;
 
-import static dev.morling.onebrc.MyUnsafe.UNSAFE;
+import static jonathan.aotearoa.jmh.MyUnsafe.UNSAFE;
 
 @BenchmarkMode(Mode.Throughput)
+@Fork(1)
+@Warmup(iterations = 2)
 public class PerfBenchmark1 {
 
     @Benchmark
@@ -35,16 +35,16 @@ public class PerfBenchmark1 {
             l9 += 10;
         }
 
-        return new long[]{l0, l1, l2, l3, l4, l5, l6, l7, l8, l9};
+        return new long[]{ l0, l1, l2, l3, l4, l5, l6, l7, l8, l9 };
     }
 
     @Benchmark
     public long[] heapArray() {
-        final long[] a = new long[]{0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        final long[] a = new long[]{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
         for (int i = 0, n = 10; i < n; i++) {
             a[i] += 10;
         }
-        return new long[]{a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]};
+        return new long[]{ a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9] };
     }
 
     @Benchmark
@@ -57,7 +57,7 @@ public class PerfBenchmark1 {
             UNSAFE.getAndAddLong(null, address + offset, 10L);
         }
 
-        return new long[] {
+        return new long[]{
                 UNSAFE.getLong(address),
                 UNSAFE.getLong(address + 8),
                 UNSAFE.getLong(address + 16),

@@ -1,5 +1,6 @@
-package dev.morling.onebrc;
+package jonathan.aotearoa.jmh;
 
+import dev.morling.onebrc.CalculateAverage_jonathanaotearoa;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;

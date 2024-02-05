@@ -368,20 +368,20 @@ public class CalculateAverage_jonathanaotearoa {
     /**
      * Abstract class encapsulating temperature data.
      */
-    static class TemperatureData {
+    public static class TemperatureData {
 
         private short min;
         private short max;
         private long sum;
         private int count;
 
-        protected TemperatureData(final short temp) {
+        public TemperatureData(final short temp) {
             min = max = temp;
             sum = temp;
             count = 1;
         }
 
-        protected TemperatureData(final short min, final short max, final long sum, final int count) {
+        public TemperatureData(final short min, final short max, final long sum, final int count) {
             this.min = min;
             this.max = max;
             this.sum = sum;
@@ -400,16 +400,21 @@ public class CalculateAverage_jonathanaotearoa {
             return this;
         }
 
-        double getMin() {
+        public double getMin() {
             return round(((double) min) / 10.0);
         }
 
-        double getMax() {
+        public double getMax() {
             return round(((double) max) / 10.0);
         }
 
-        double getMean() {
+        public double getMean() {
             return round((((double) sum) / 10.0) / count);
+        }
+
+        @Override
+        public String toString() {
+            return getMin() + "/" + getMean() + "/" + getMax();
         }
 
         private static double round(double value) {
