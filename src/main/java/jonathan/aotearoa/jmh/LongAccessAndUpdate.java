@@ -4,13 +4,39 @@ import org.openjdk.jmh.annotations.*;
 
 import static jonathan.aotearoa.jmh.MyUnsafe.UNSAFE;
 
+/**
+ * <p>
+ * <pre>
+ * Benchmark                         Mode  Cnt         Score   Error  Units
+ * LongAddition.array               thrpt    2  75181798.641          ops/s
+ * LongAddition.localVariables      thrpt    2  75238801.255          ops/s
+ * LongAddition.unsafeNativeMemory  thrpt    2  41609345.498          ops/s
+ * </pre>
+ * </p>
+ */
 @BenchmarkMode(Mode.Throughput)
 @Fork(1)
 @Warmup(iterations = 2)
-public class PerfBenchmark1 {
+@Measurement(iterations = 2)
+@State(Scope.Thread)
+public class LongAccessAndUpdate {
+
+    private long address;
+
+    @Setup
+    public void setUp() {
+        final int byteCount = 10 * Long.BYTES;
+        address = UNSAFE.allocateMemory(byteCount);
+        UNSAFE.setMemory(null, address, byteCount, (byte) 0);
+    }
+
+    @TearDown
+    public void tearDown() {
+        UNSAFE.freeMemory(address);
+    }
 
     @Benchmark
-    public long[] stackVariables() {
+    public long[] localVariables() {
         long l0 = 0;
         long l1 = 0;
         long l2 = 0;
@@ -39,7 +65,7 @@ public class PerfBenchmark1 {
     }
 
     @Benchmark
-    public long[] heapArray() {
+    public long[] array() {
         final long[] a = new long[]{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
         for (int i = 0, n = 10; i < n; i++) {
             a[i] += 10;
@@ -48,12 +74,8 @@ public class PerfBenchmark1 {
     }
 
     @Benchmark
-    public long[] offHeapMemory() {
-        final long byteCount = 10 * Long.BYTES;
-        final long address = UNSAFE.allocateMemory(byteCount);
-        UNSAFE.setMemory(null, address, byteCount, (byte) 0);
-
-        for (int offset = 0; offset < byteCount; offset += Long.BYTES) {
+    public long[] unsafeNativeMemory() {
+        for (int offset = 0, i = 0; i < 10; i++, offset += Long.BYTES) {
             UNSAFE.getAndAddLong(null, address + offset, 10L);
         }
 
