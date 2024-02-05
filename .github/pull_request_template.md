@@ -1,3 +1,6 @@
+**NOTE:** The challenge has been closed for new submissions. No new pull requests for adding submissions are accepted at this time.
+The final leaderboard has been published on Feb 4.
+
 #### Check List:
 
 - [ ] You have run `./mvnw verify` and the project builds successfully

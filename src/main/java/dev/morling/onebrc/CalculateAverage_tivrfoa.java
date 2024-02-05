@@ -23,45 +23,59 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.*;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Solution based on thomaswue solution, commit:
  * commit d0a28599c293d3afe3291fc3cf169a7b25ae9ae6
- * Author: Thomas Wuerthinger <thomas.wuerthinger@oracle.com>
+ * Author: Thomas Wuerthinger
  * Date:   Sun Jan 21 20:13:48 2024 +0100
  *
- * Changes:
- *   1) Use LinkedBlockingQueue to store partial results, that
- *   will then be merged into the final map later.
- *   As different chunks finish at different times, this allows
- *   to process them as they finish, instead of joining the
- *   threads sequentially.
- *     This change seems more useful for the 10k dataset, as the
- *   runtime difference of each chunk is greater.
- *   2) Use only 4 threads if the file is >= 14GB.
- *   This showed much better results on my local test, but I only
- *   run with 200 million rows (because of limited RAM), and I have
- *   no idea how it will perform on the 1brc HW.
+ * The goal here was to try to improve the runtime of his 10k
+ * solution of: 00:04.516
+ * 
+ * With Thomas latest changes, his time is probably much better
+ * already, and maybe even 1st place for the 10k too.
+ * See: https://github.com/gunnarmorling/1brc/pull/606
+ * 
+ * As I was not able to make it faster ... so I'll make it slower,
+ * because my current solution should *not* stay at the top, as it added
+ * basically nothing.
  */
 public class CalculateAverage_tivrfoa {
     private static final String FILE = "./measurements.txt";
-    private static LinkedBlockingQueue<List<Result>> partialResultQueue;
-    private static int C = 10_000;
-    private static final int MIN_TEMP = -999;
-    private static final int MAX_TEMP = 999;
+
+    private static final int MAX_CITIES = 10_000;
+    private static final int BUCKETS_LEN = 1 << 17;
+    private static final int LAST_BUCKET_ENTRY = BUCKETS_LEN - 1;
+    private static final int NUM_CPUS = Runtime.getRuntime().availableProcessors();
+    private static final AtomicInteger chunkIdx = new AtomicInteger();
+    private static long[] chunks;
+    private static int numChunks;
 
     // Holding the current result for a single city.
     private static class Result {
-        long lastNameLong, secondLastNameLong;
+        long lastNameLong;
         long[] name;
         int count;
         short min, max;
         long sum;
 
-        private Result() {
-            this.min = MAX_TEMP;
-            this.max = MIN_TEMP;
+        private Result(short number, long nameAddress, byte nameLength, Scanner scanner) {
+            this.min = number;
+            this.max = number;
+            this.sum = number;
+            this.count = 1;
+
+            name = new long[(nameLength / Long.BYTES) + 1];
+            int pos = 0, i = 0;
+            for (; i < nameLength + 1 - Long.BYTES; i += Long.BYTES) {
+                name[pos++] = scanner.getLongAt(nameAddress + i);
+            }
+
+            int remainingShift = (64 - (nameLength + 1 - i) << 3);
+            lastNameLong = (scanner.getLongAt(nameAddress + i) << remainingShift);
+            name[pos] = lastNameLong >> remainingShift;
         }
 
         public String toString() {
@@ -84,6 +98,17 @@ public class CalculateAverage_tivrfoa {
             count += other.count;
         }
 
+        private void add(short number) {
+            if (number < min) {
+                min = number;
+            }
+            if (number > max) {
+                max = number;
+            }
+            sum += number;
+            count++;
+        }
+
         public String calcName() {
             ByteBuffer bb = ByteBuffer.allocate(name.length * Long.BYTES).order(ByteOrder.nativeOrder());
             bb.asLongBuffer().put(name);
@@ -95,217 +120,153 @@ public class CalculateAverage_tivrfoa {
         }
     }
 
-    private static final class SolveChunk extends Thread {
-        private long chunkStart, chunkEnd;
+    /**
+     * From:
+     * https://github.com/OpenHFT/Zero-Allocation-Hashing/blob/ea/src/main/java/net/openhft/hashing/XXH3.java
+     * 
+     * Less collisions, but it will make the code slower. xD
+     * 
+     * One interesting thing about Thomas' solution that I
+     * started to work with (d0a28599), is that it basically does not have
+     * any collision for the small data set (sometimes none!), but it
+     * has lots of collisions for the 10k, hence its poor performance.
+     * 
+     */
+    private static long XXH3_avalanche(long h64) {
+        h64 ^= h64 >>> 37;
+        h64 *= 0x165667919E3779F9L;
+        return h64 ^ (h64 >>> 32);
+    }
 
-        public SolveChunk(long chunkStart, long chunkEnd) {
-            this.chunkStart = chunkStart;
-            this.chunkEnd = chunkEnd;
+    private static final class SolveChunk extends Thread {
+        private int chunkStartIdx;
+        private Result[] results = new Result[MAX_CITIES];
+        private Result[] buckets = new Result[BUCKETS_LEN];
+        private int resIdx = 0;
+
+        public SolveChunk(int chunkStartIdx) {
+            this.chunkStartIdx = chunkStartIdx;
         }
 
         @Override
         public void run() {
-            try {
-                partialResultQueue.put(parseLoop(chunkStart, chunkEnd));
-            }
-            catch (Exception e) {
-                e.printStackTrace();
-                System.exit(1);
+            for (; chunkStartIdx < numChunks; chunkStartIdx = chunkIdx.getAndIncrement()) {
+                Scanner scanner = new Scanner(chunks[chunkStartIdx], chunks[chunkStartIdx + 1]);
+                long word = scanner.getLong();
+                long pos = findDelimiter(word);
+                while (scanner.hasNext()) {
+                    long nameAddress = scanner.pos();
+                    long hash = 0;
+
+                    while (true) {
+                        if (pos != 0) {
+                            pos = Long.numberOfTrailingZeros(pos) >>> 3;
+                            scanner.add(pos);
+                            word = mask(word, pos);
+                            hash ^= XXH3_avalanche(word);
+                            break;
+                        }
+                        else {
+                            scanner.add(8);
+                            hash ^= XXH3_avalanche(word);
+                        }
+
+                        word = scanner.getLong();
+                        pos = findDelimiter(word);
+                    }
+
+                    byte nameLength = (byte) (scanner.pos() - nameAddress);
+                    short number = scanNumber(scanner);
+
+                    int tableIndex = hashToIndex(hash);
+                    outer: while (true) {
+                        Result existingResult = buckets[tableIndex];
+                        if (existingResult == null) {
+                            var newResult = new Result(number, nameAddress, nameLength, scanner);
+                            buckets[tableIndex] = newResult;
+                            results[resIdx++] = newResult;
+                            break;
+                        }
+                        int i = 0;
+                        int namePos = 0;
+                        for (; i < nameLength + 1 - 8; i += 8) {
+                            if (namePos >= existingResult.name.length || existingResult.name[namePos++] != scanner.getLongAt(nameAddress + i)) {
+                                tableIndex = (tableIndex + 31) & (LAST_BUCKET_ENTRY);
+                                continue outer;
+                            }
+                        }
+
+                        int remainingShift = (64 - (nameLength + 1 - i) << 3);
+                        if (((existingResult.lastNameLong ^ (scanner.getLongAt(nameAddress + i) << remainingShift)) == 0)) {
+                            existingResult.add(number);
+                            break;
+                        }
+                        else {
+                            tableIndex = (tableIndex + 31) & (LAST_BUCKET_ENTRY);
+                        }
+                    }
+
+                    word = scanner.getLong();
+                    pos = findDelimiter(word);
+                }
             }
         }
     }
 
-    public static void main(String[] args) throws Exception {
-        boolean runTrick = true;
-        for (var arg : args) {
-            if (arg.equals("--worker")) {
-                runTrick = false;
-                break;
-            }
-        }
-        if (runTrick) {
-            spawnWorker();
-            return;
-        }
-        final int cpus = Runtime.getRuntime().availableProcessors();
-        final long[] chunks = getSegments(cpus);
-        final int workers = chunks.length - 1;
-        partialResultQueue = new LinkedBlockingQueue<>(workers);
-        final SolveChunk[] threads = new SolveChunk[workers];
-        for (int i = 0; i < workers; i++) {
-            threads[i] = new SolveChunk(chunks[i], chunks[i + 1]);
-            threads[i].start();
-        }
-        final TreeMap<String, Result> ret = new TreeMap<>();
-        for (int i = 0; i < workers; ++i) {
-            accumulateResults(ret, partialResultQueue.take());
-        }
-        System.out.println(ret);
-        System.out.close();
-    }
-
-    private static void spawnWorker() throws IOException {
-        ProcessHandle.Info info = ProcessHandle.current().info();
-        ArrayList<String> workerCommand = new ArrayList<>();
-        info.command().ifPresent(workerCommand::add);
-        info.arguments().ifPresent(args -> workerCommand.addAll(Arrays.asList(args)));
-        workerCommand.add("--worker");
-        new ProcessBuilder()
-                .command(workerCommand)
-                .inheritIO()
-                .redirectOutput(ProcessBuilder.Redirect.PIPE)
-                .start()
-                .getInputStream()
-                .transferTo(System.out);
-    }
-
-    private static void accumulateResults(TreeMap<String, Result> result, List<Result> newResult) {
-        for (Result r : newResult) {
-            String name = r.calcName();
-            Result current = result.putIfAbsent(name, r);
+    private static void mergeIntoFinalMap(TreeMap<String, Result> map, Result[] newResults) {
+        for (var r : newResults) {
+            if (r == null)
+                return;
+            Result current = map.putIfAbsent(r.calcName(), r);
             if (current != null) {
                 current.add(r);
             }
         }
     }
 
-    // Main parse loop.
-    private static ArrayList<Result> parseLoop(long chunkStart, long chunkEnd) {
-        ArrayList<Result> ret = new ArrayList<>(C);
-        Result[] results = new Result[1 << 17];
-        Scanner scanner = new Scanner(chunkStart, chunkEnd);
-        long word = scanner.getLong();
-        long pos = findDelimiter(word);
-        while (scanner.hasNext()) {
-            long nameAddress = scanner.pos();
-            long hash = 0;
-
-            // Search for ';', one long at a time.
-            if (pos != 0) {
-                pos = Long.numberOfTrailingZeros(pos) >>> 3;
-                scanner.add(pos);
-                word = mask(word, pos);
-                hash = word;
-
-                int number = scanNumber(scanner);
-                long nextWord = scanner.getLong();
-                long nextPos = findDelimiter(nextWord);
-
-                Result existingResult = results[hashToIndex(hash, results)];
-                if (existingResult != null && existingResult.lastNameLong == word) {
-                    word = nextWord;
-                    pos = nextPos;
-                    record(existingResult, number);
-                    continue;
-                }
-
-                scanner.setPos(nameAddress + pos);
-            }
-            else {
-                scanner.add(8);
-                hash = word;
-                long prevWord = word;
-                word = scanner.getLong();
-                pos = findDelimiter(word);
-                if (pos != 0) {
-                    pos = Long.numberOfTrailingZeros(pos) >>> 3;
-                    scanner.add(pos);
-                    word = mask(word, pos);
-                    hash ^= word;
-
-                    Result existingResult = results[hashToIndex(hash, results)];
-                    if (existingResult != null && existingResult.lastNameLong == word && existingResult.secondLastNameLong == prevWord) {
-                        int number = scanNumber(scanner);
-                        word = scanner.getLong();
-                        pos = findDelimiter(word);
-                        record(existingResult, number);
-                        continue;
-                    }
-                }
-                else {
-                    scanner.add(8);
-                    hash ^= word;
-                    while (true) {
-                        word = scanner.getLong();
-                        pos = findDelimiter(word);
-                        if (pos != 0) {
-                            pos = Long.numberOfTrailingZeros(pos) >>> 3;
-                            scanner.add(pos);
-                            word = mask(word, pos);
-                            hash ^= word;
-                            break;
-                        }
-                        else {
-                            scanner.add(8);
-                            hash ^= word;
-                        }
-                    }
-                }
-            }
-
-            // Save length of name for later.
-            int nameLength = (int) (scanner.pos() - nameAddress);
-            int number = scanNumber(scanner);
-
-            // Final calculation for index into hash table.
-            int tableIndex = hashToIndex(hash, results);
-            outer: while (true) {
-                Result existingResult = results[tableIndex];
-                if (existingResult == null) {
-                    existingResult = newEntry(results, nameAddress, tableIndex, nameLength, scanner);
-                    ret.add(existingResult);
-                }
-                // Check for collision.
-                int i = 0;
-                int namePos = 0;
-                for (; i < nameLength + 1 - 8; i += 8) {
-                    if (namePos >= existingResult.name.length || existingResult.name[namePos++] != scanner.getLongAt(nameAddress + i)) {
-                        tableIndex = (tableIndex + 31) & (results.length - 1);
-                        continue outer;
-                    }
-                }
-
-                int remainingShift = (64 - (nameLength + 1 - i) << 3);
-                if (((existingResult.lastNameLong ^ (scanner.getLongAt(nameAddress + i) << remainingShift)) == 0)) {
-                    record(existingResult, number);
-                    break;
-                }
-                else {
-                    // Collision error, try next.
-                    tableIndex = (tableIndex + 31) & (results.length - 1);
-                }
-            }
-
-            word = scanner.getLong();
-            pos = findDelimiter(word);
+    public static void main(String[] args) throws InterruptedException, IOException {
+        chunks = getSegments(NUM_CPUS);
+        numChunks = chunks.length - 1;
+        final SolveChunk[] threads = new SolveChunk[NUM_CPUS];
+        chunkIdx.set(NUM_CPUS);
+        for (int i = 0; i < NUM_CPUS; i++) {
+            threads[i] = new SolveChunk(i);
+            threads[i].start();
         }
-        return ret;
+
+        System.out.println(getMap(threads));
+        System.out.close();
     }
 
-    private static int scanNumber(Scanner scanPtr) {
+    private static TreeMap<String, Result> getMap(SolveChunk[] threads) throws InterruptedException {
+        TreeMap<String, Result> map = new TreeMap<>();
+        threads[0].join();
+        for (var r : threads[0].results) {
+            if (r == null)
+                break;
+            map.put(r.calcName(), r);
+        }
+        for (int i = 1; i < NUM_CPUS; ++i) {
+            threads[i].join();
+            mergeIntoFinalMap(map, threads[i].results);
+        }
+
+        return map;
+    }
+
+    private static short scanNumber(Scanner scanPtr) {
         scanPtr.add(1);
         long numberWord = scanPtr.getLong();
         int decimalSepPos = Long.numberOfTrailingZeros(~numberWord & 0x10101000);
         int number = convertIntoNumber(decimalSepPos, numberWord);
         scanPtr.add((decimalSepPos >>> 3) + 3);
-        return number;
+        return (short) number;
     }
 
-    private static void record(Result existingResult, int number) {
-        if (number < existingResult.min) {
-            existingResult.min = (short) number;
-        }
-        if (number > existingResult.max) {
-            existingResult.max = (short) number;
-        }
-        existingResult.sum += number;
-        existingResult.count++;
-    }
-
-    private static int hashToIndex(long hash, Result[] results) {
+    private static int hashToIndex(long hash) {
         int hashAsInt = (int) (hash ^ (hash >>> 28));
         int finalHash = (hashAsInt ^ (hashAsInt >>> 17));
-        return (finalHash & (results.length - 1));
+        return (finalHash & LAST_BUCKET_ENTRY);
     }
 
     private static long mask(long word, long pos) {
@@ -334,50 +295,44 @@ public class CalculateAverage_tivrfoa {
         return tmp;
     }
 
-    private static Result newEntry(Result[] results, long nameAddress, int hash, int nameLength, Scanner scanner) {
-        Result r = new Result();
-        results[hash] = r;
-        long[] name = new long[(nameLength / Long.BYTES) + 1];
-        int pos = 0;
-        int i = 0;
-        for (; i < nameLength + 1 - Long.BYTES; i += Long.BYTES) {
-            name[pos++] = scanner.getLongAt(nameAddress + i);
-        }
-
-        if (pos > 0) {
-            r.secondLastNameLong = name[pos - 1];
-        }
-
-        int remainingShift = (64 - (nameLength + 1 - i) << 3);
-        long lastWord = (scanner.getLongAt(nameAddress + i) << remainingShift);
-        r.lastNameLong = lastWord;
-        name[pos] = lastWord >> remainingShift;
-        r.name = name;
-        return r;
-    }
-
+    /**
+     *  - Split 70% of the file in even chunks for all cpus;
+     *  - Create smaller chunks for the remainder of the file.  
+     */
     private static long[] getSegments(int cpus) throws IOException {
         try (var fileChannel = FileChannel.open(Path.of(FILE), StandardOpenOption.READ)) {
-            long fileSize = fileChannel.size();
-            int numberOfChunks = cpus / 2;
-            if (fileSize < (int) 14e9) {
-                C = 500;
-                numberOfChunks = cpus;
-            }
-            long segmentSize = (fileSize + numberOfChunks - 1) / numberOfChunks;
-            long[] chunks = new long[numberOfChunks + 1];
-            long mappedAddress = fileChannel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, java.lang.foreign.Arena.global()).address();
+            final long fileSize = fileChannel.size();
+            final long part1 = (long) (fileSize * 0.7);
+            final long part2 = (long) (fileSize * 0.2);
+            final long part3 = fileSize - part1 - part2;
+            final long bigChunkSize = (part1 - 1) / cpus;
+            final long smallChunkSize1 = (part2 - 1) / (cpus * 3);
+            final long smallChunkSize2 = (part3 - 1) / (cpus * 3);
+            final int numChunks = cpus + cpus * 3 + cpus * 3;
+            final long[] sizes = new long[numChunks];
+            int l = 0, r = cpus;
+            Arrays.fill(sizes, l, r, bigChunkSize);
+            l = r;
+            r = l + cpus * 3;
+            Arrays.fill(sizes, l, r, smallChunkSize1);
+            l = r;
+            r = l + cpus * 3;
+            Arrays.fill(sizes, l, r, smallChunkSize2);
+            final long[] chunks = new long[sizes.length + 1];
+            final long mappedAddress = fileChannel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, java.lang.foreign.Arena.global()).address();
             chunks[0] = mappedAddress;
-            long endAddress = mappedAddress + fileSize;
-            Scanner s = new Scanner(mappedAddress, mappedAddress + fileSize);
-            for (int i = 1; i < numberOfChunks; ++i) {
-                long chunkAddress = mappedAddress + i * segmentSize;
+            final long endAddress = mappedAddress + fileSize;
+            final Scanner s = new Scanner(mappedAddress, mappedAddress + fileSize);
+            for (int i = 1, sizeIdx = 0; i < chunks.length - 1; ++i, sizeIdx = (sizeIdx + 1) % sizes.length) {
+                long chunkAddress = chunks[i - 1] + sizes[sizeIdx];
                 // Align to first row start.
                 while (chunkAddress < endAddress && (s.getLongAt(chunkAddress++) & 0xFF) != '\n')
                     ;
                 chunks[i] = Math.min(chunkAddress, endAddress);
+                // System.err.printf("Chunk size %d\n", chunks[i] - chunks[i - 1]);
             }
-            chunks[numberOfChunks] = endAddress;
+            chunks[chunks.length - 1] = endAddress;
+            // System.err.printf("Chunk size %d\n", chunks[chunks.length - 1] - chunks[chunks.length - 2]);
             return chunks;
         }
     }
