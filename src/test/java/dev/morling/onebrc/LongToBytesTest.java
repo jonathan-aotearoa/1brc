@@ -38,8 +38,9 @@ class LongToBytesTest {
     void forLoopShift() {
         // When
         final byte[] actual = new byte[Long.BYTES];
-        for (int i = 7, shift = 0; i >= 0; i--, shift += Byte.SIZE) {
-            actual[i] = (byte) (l >> shift);
+        for (int i = 7; i >= 0; i--) {
+            actual[i] = (byte) (l);
+            l >>= Byte.SIZE;
         }
         // Then
         assertArrayEquals(expected, actual);

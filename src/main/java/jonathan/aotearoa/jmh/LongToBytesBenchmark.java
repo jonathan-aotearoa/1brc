@@ -47,8 +47,9 @@ public class LongToBytesBenchmark {
 
     @Benchmark
     public byte[] forLoopShifts() {
-        for (int i = 7, shift = 0; i >= 0; i--, shift += Byte.SIZE) {
-            bytes[i] = (byte) (l >> shift);
+        for (int i = 7; i >= 0; i--) {
+            bytes[i] = (byte) l;
+            l >>= 8;
         }
         return bytes;
     }
