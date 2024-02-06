@@ -19,7 +19,7 @@ import static jonathan.aotearoa.MyUnsafe.UNSAFE;
 @State(Scope.Thread)
 public class LongAccessAndUpdateBenchmark {
 
-    private long address;
+    long address;
 
     @Setup
     public void setUp() {

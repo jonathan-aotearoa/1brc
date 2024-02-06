@@ -27,7 +27,7 @@ import dev.morling.onebrc.CalculateAverage_jonathanaotearoa.TemperatureData;
 @State(Scope.Thread)
 public class MapToStringBenchmark {
 
-    private Map<String, TemperatureData> data;
+    Map<String, TemperatureData> data;
 
     @Setup
     public void setUp() {

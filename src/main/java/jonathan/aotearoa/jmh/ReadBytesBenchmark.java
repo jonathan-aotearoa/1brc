@@ -25,7 +25,7 @@ import static jonathan.aotearoa.MyUnsafe.UNSAFE;
 @State(Scope.Thread)
 public class ReadBytesBenchmark {
 
-    private Path filePath;
+    Path filePath;
 
     @Setup
     public void setUp() {
