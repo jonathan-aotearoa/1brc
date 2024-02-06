@@ -6,10 +6,10 @@ import static jonathan.aotearoa.MyUnsafe.UNSAFE;
 
 /**
  * <pre>
- * Benchmark                         Mode  Cnt         Score   Error  Units
- * LongAddition.array               thrpt    2  75181798.641          ops/s
- * LongAddition.localVariables      thrpt    2  75238801.255          ops/s
- * LongAddition.unsafeNativeMemory  thrpt    2  41609345.498          ops/s
+ * Benchmark                                         Mode  Cnt         Score   Error  Units
+ * LongAccessAndUpdateBenchmark.array               thrpt    2  75181798.641          ops/s
+ * LongAccessAndUpdateBenchmark.localVariables      thrpt    2  75238801.255          ops/s
+ * LongAccessAndUpdateBenchmark.unsafeNativeMemory  thrpt    2  41609345.498          ops/s
  * </pre>
  */
 @BenchmarkMode(Mode.Throughput)
