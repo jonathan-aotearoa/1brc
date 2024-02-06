@@ -32,7 +32,7 @@ public class ReadBytesBenchmark {
         filePath = Path.of("./measurements.txt");
     }
 
-    // @Benchmark
+    @Benchmark
     public void unsafeGetByte() throws IOException {
         try (final FileChannel fc = FileChannel.open(filePath, StandardOpenOption.READ)) {
             final long fileSize = fc.size();
@@ -44,7 +44,7 @@ public class ReadBytesBenchmark {
         }
     }
 
-    // @Benchmark
+    @Benchmark
     public void unsafeGetLongV1() throws IOException {
         try (final FileChannel fc = FileChannel.open(filePath, StandardOpenOption.READ)) {
             final long fileSize = fc.size();
