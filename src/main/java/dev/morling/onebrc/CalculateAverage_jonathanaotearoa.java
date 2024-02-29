@@ -241,10 +241,14 @@ public class CalculateAverage_jonathanaotearoa {
             // Read station name.
             final long nameAddress = address;
             long nameWord;
+            long nameWord0 = 0;
+            long nameWord1 = 0;
+            long nameWord2 = 0;
             long separatorMask;
             int nameHash = 1;
 
-            while (true) {
+            int nameWordIndex = 0;
+            for (;; nameWordIndex++) {
                 nameWord = chunk.getWord(address);
 
                 // Based on the Hacker's Delight "Find First 0-Byte" branch-free, 5-instruction, algorithm.
@@ -254,9 +258,14 @@ public class CalculateAverage_jonathanaotearoa {
                 // If the separator is present, the first bit of the corresponding byte in the mask will be 1.
                 separatorMask = (separatorXorResult - 0x0101010101010101L) & (~separatorXorResult & 0x8080808080808080L);
                 if (separatorMask == 0) {
+                    switch (nameWordIndex) {
+                        case 0 -> nameWord0 = nameWord;
+                        case 1 -> nameWord1 = nameWord;
+                        case 2 -> nameWord2 = nameWord;
+                    }
                     address += Long.BYTES;
                     // Multiplicative hashing, as per Arrays.hashCode(long[]).
-                    // We could use XOR, but it would produce more collisions.
+                    // Not using XOR, as it produces more collisions.
                     nameHash = 31 * nameHash + (int) (nameWord ^ (nameWord >>> 32));
                 }
                 else {
@@ -275,6 +284,11 @@ public class CalculateAverage_jonathanaotearoa {
                 final int bitsToDiscard = Long.SIZE - numberOfNameBits;
                 // Little endian.
                 nameWord = (nameWord << bitsToDiscard) >>> bitsToDiscard;
+                switch (nameWordIndex) {
+                    case 0 -> nameWord0 = nameWord;
+                    case 1 -> nameWord1 = nameWord;
+                    case 2 -> nameWord2 = nameWord;
+                }
                 nameHash = 31 * nameHash + (int) (nameWord ^ (nameWord >>> 32));
             }
 
@@ -313,7 +327,7 @@ public class CalculateAverage_jonathanaotearoa {
             final short temp = (short) ((unsignedTemp + sign) ^ sign);
 
             final byte nameSize = (byte) (separatorAddress - nameAddress);
-            repo.addTemp(nameHash, nameAddress, nameSize, temp);
+            repo.addTemp(nameWord0, nameWord1, nameWord2, nameHash, nameAddress, nameSize, temp);
 
             // Calculate the address of the next line.
             address = tempAddress + decimalPointIndex + 3;
@@ -437,16 +451,47 @@ public class CalculateAverage_jonathanaotearoa {
 
     private static final class StationData extends TemperatureData {
 
+        private static final byte NAME_BYTES_CACHE_SIZE = Long.BYTES * 3;
+
+        private final long nameWord0;
+        private final long nameWord1;
+        private final long nameWord2;
         private final int nameHash;
         private final long nameAddress;
         private final byte nameSize;
         private String name;
 
-        StationData(final int nameHash, final long nameAddress, final byte nameSize, final short temp) {
+        StationData(final long nameWord0,
+                    final long nameWord1,
+                    final long nameWord2,
+                    final int nameHash,
+                    final long nameAddress,
+                    final byte nameSize,
+                    final short temp) {
             super(temp);
+            this.nameWord0 = nameWord0;
+            this.nameWord1 = nameWord1;
+            this.nameWord2 = nameWord2;
             this.nameAddress = nameAddress;
             this.nameSize = nameSize;
             this.nameHash = nameHash;
+        }
+
+        boolean isNameEqual(final long nameWord0,
+                            final long nameWord1,
+                            final long nameWord2,
+                            final long nameAddress, final byte nameSize) {
+            if (nameSize != this.nameSize) {
+                return false;
+            }
+            if (nameSize <= NAME_BYTES_CACHE_SIZE) {
+                return nameWord0 == this.nameWord0
+                        && nameWord1 == this.nameWord1
+                        && nameWord2 == this.nameWord2;
+            }
+            return isMemoryEqual(nameAddress + NAME_BYTES_CACHE_SIZE,
+                    this.nameAddress + NAME_BYTES_CACHE_SIZE,
+                    nameSize - NAME_BYTES_CACHE_SIZE);
         }
 
         String getName() {
@@ -455,6 +500,38 @@ public class CalculateAverage_jonathanaotearoa {
             }
             return name;
         }
+    }
+
+    /**
+     * Checks if two memory addresses contain the same bytes.
+     *
+     * @param address1 the first address.
+     * @param address2 the second address.
+     * @param size the number of bytes to check.
+     * @return true if both memory addresses contain the same bytes.
+     */
+    private static boolean isMemoryEqual(final long address1, final long address2, final int size) {
+        final int wordCount = size >> 3;
+        final int byteCount = size & 7;
+        long ptr1 = address1;
+        long ptr2 = address2;
+        for (int i = 0; i < wordCount; i++) {
+            final long l1 = UNSAFE.getLong(ptr1);
+            final long l2 = UNSAFE.getLong(ptr2);
+            if (l1 != l2) {
+                return false;
+            }
+            ptr1 += Long.BYTES;
+            ptr2 += Long.BYTES;
+        }
+        for (int i = 0; i < byteCount; i++) {
+            final byte b1 = UNSAFE.getByte(ptr1++);
+            final byte b2 = UNSAFE.getByte(ptr2++);
+            if (b1 != b2) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static String loadStringFromMemory(final long address, final int size) {
@@ -485,10 +562,16 @@ public class CalculateAverage_jonathanaotearoa {
          * @param nameSize    the station name size in bytes.
          * @param temp        the temperature value.
          */
-        public void addTemp(final int nameHash, final long nameAddress, final byte nameSize, short temp) {
-            final int index = findIndex(nameHash, nameAddress, nameSize);
+        public void addTemp(final long nameWord0,
+                            final long nameWord1,
+                            final long nameWord2,
+                            final int nameHash,
+                            final long nameAddress,
+                            final byte nameSize,
+                            final short temp) {
+            final int index = findIndex(nameWord0, nameWord1, nameWord2, nameHash, nameAddress, nameSize);
             if (table[index] == null) {
-                table[index] = new StationData(nameHash, nameAddress, nameSize, temp);
+                table[index] = new StationData(nameWord0, nameWord1, nameWord2, nameHash, nameAddress, nameSize, temp);
             }
             else {
                 table[index].addTemp(temp);
@@ -499,61 +582,40 @@ public class CalculateAverage_jonathanaotearoa {
             return Arrays.stream(table).filter(Objects::nonNull);
         }
 
-        private int findIndex(int nameHash, final long nameAddress, final byte nameSize) {
+        private int findIndex(final long nameWord0,
+                              final long nameWord1,
+                              final long nameWord2,
+                              final int nameHash,
+                              final long nameAddress,
+                              final byte nameSize) {
             // Think about replacing modulo.
             // https://lemire.me/blog/2018/08/20/performance-of-ranged-accesses-into-arrays-modulo-multiply-shift-and-masks/
             int index = (nameHash & 0x7FFFFFFF) % CAPACITY;
-            while (isMismatch(index, nameHash, nameAddress, nameSize)) {
+            while (isMismatch(index, nameWord0, nameWord1, nameWord2, nameHash, nameAddress, nameSize)) {
                 index = index == LAST_INDEX ? 0 : index + 1;
             }
             return index;
         }
 
-        private boolean isMismatch(final int index, final long nameHash, final long nameAddress, final byte nameSize) {
+        private boolean isMismatch(final int index,
+                                   final long nameWord0,
+                                   final long nameWord1,
+                                   final long nameWord2,
+                                   final long nameHash,
+                                   final long nameAddress,
+                                   final byte nameSize) {
             final StationData existing = table[index];
             if (existing == null) {
                 return false;
             }
             if (nameHash == existing.nameHash) {
-                if (nameSize == existing.nameSize && isMemoryEqual(nameAddress, existing.nameAddress, nameSize)) {
+                if (existing.isNameEqual(nameWord0, nameWord1, nameWord2, nameAddress, nameSize)) {
                     return false;
                 }
                 // We've got a hash collision :(
                 // final String name1 = loadStringFromMemory(nameAddress, nameSize);
                 // final String name2 = loadStringFromMemory(existing.nameAddress, existing.nameSize);
                 // System.out.printf("Collision. Hash: %d, Name1: '%s', Name2: '%s'%n", nameHash, name1, name2);
-            }
-            return true;
-        }
-
-        /**
-         * Checks if two memory addresses contain the same bytes.
-         *
-         * @param address1 the first address.
-         * @param address2 the second address.
-         * @param size the number of bytes to check.
-         * @return true if both memory addresses contain the same bytes.
-         */
-        private static boolean isMemoryEqual(final long address1, final long address2, final byte size) {
-            final int wordCount = size >> 3;
-            final int byteCount = size & 7;
-            long ptr1 = address1;
-            long ptr2 = address2;
-            for (int i = 0; i < wordCount; i++) {
-                final long l1 = UNSAFE.getLong(ptr1);
-                final long l2 = UNSAFE.getLong(ptr2);
-                if (l1 != l2) {
-                    return false;
-                }
-                ptr1 += Long.BYTES;
-                ptr2 += Long.BYTES;
-            }
-            for (int i = 0; i < byteCount; i++) {
-                final byte b1 = UNSAFE.getByte(ptr1++);
-                final byte b2 = UNSAFE.getByte(ptr2++);
-                if (b1 != b2) {
-                    return false;
-                }
             }
             return true;
         }
